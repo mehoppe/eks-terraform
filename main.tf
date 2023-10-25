@@ -68,24 +68,164 @@ module "eks" {
   }
 }
 
-# data "aws_iam_policy" "ebs_csi_policy" {
-#   arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-# }
 
-# module "irsa_ebs_csi" {
-#   source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role-with-oidc"
-#   version = "4.7.0"
+resource "aws_iam_policy" "ebs_csi_policy" {
+  name        = "ebs_csi_policy"
+  path        = "/"
+  description = "ebs csi policy"
 
-#   create_role                   = true
-#   role_name                     = "AmazonEKSTFEBSCSIRole-${module.eks.cluster_name}"
-#   provider_url                  = module.eks.oidc_provider
-#   role_policy_arns              = [data.aws_iam_policy.ebs_csi_policy.arn]
-#   oidc_fully_qualified_subjects = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
-# }
+  # Terraform's "jsonencode" function converts a
+  # Terraform expression result to valid JSON syntax.
+  policy = jsonencode({
+  "Version" : "2012-10-17",
+  "Statement" : [
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:CreateSnapshot",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume",
+        "ec2:ModifyVolume",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeInstances",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeTags",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications"
+      ],
+      "Resource" : "*"
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:CreateTags"
+      ],
+      "Resource" : [
+        "arn:aws:ec2:*:*:volume/*",
+        "arn:aws:ec2:*:*:snapshot/*"
+      ],
+      "Condition" : {
+        "StringEquals" : {
+          "ec2:CreateAction" : [
+            "CreateVolume",
+            "CreateSnapshot"
+          ]
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteTags"
+      ],
+      "Resource" : [
+        "arn:aws:ec2:*:*:volume/*",
+        "arn:aws:ec2:*:*:snapshot/*"
+      ]
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:CreateVolume"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "aws:RequestTag/ebs.csi.aws.com/cluster" : "true"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:CreateVolume"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "aws:RequestTag/CSIVolumeName" : "*"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteVolume"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "ec2:ResourceTag/ebs.csi.aws.com/cluster" : "true"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteVolume"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "ec2:ResourceTag/CSIVolumeName" : "*"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteVolume"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "ec2:ResourceTag/kubernetes.io/created-for/pvc/name" : "*"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteSnapshot"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "ec2:ResourceTag/CSIVolumeSnapshotName" : "*"
+        }
+      }
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:DeleteSnapshot"
+      ],
+      "Resource" : "*",
+      "Condition" : {
+        "StringLike" : {
+          "ec2:ResourceTag/ebs.csi.aws.com/cluster" : "true"
+        }
+      }
+    }
+  ]
+})
+}
+
+module "irsa_ebs_csi" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role-with-oidc"
+  version = "4.7.0"
+
+  create_role                   = true
+  role_name                     = "ebs_csi_role-${module.eks.cluster_name}"
+  provider_url                  = module.eks.oidc_provider
+  role_policy_arns              = [aws_iam_policy.ebs_csi_policy.arn]
+  oidc_fully_qualified_subjects = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+}
 
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name             = module.eks.cluster_name
   addon_name               = "aws-ebs-csi-driver"
+  service_account_role_arn = module.irsa_ebs_csi.iam_role_arn
 }
 
 resource "aws_eks_addon" "codedns" {
@@ -98,22 +238,59 @@ resource "aws_eks_addon" "kube_proxy" {
   addon_name               = "kube-proxy"
 }
 
-# data "aws_iam_policy" "vpc_cni_policy" {
-#   arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-# }
+resource "aws_iam_policy" "vpc_cni_policy" {
+  name        = "vpc_cni_policy"
+  path        = "/"
+  description = "vpc cni policy"
 
-# module "irsa_vpc_cni" {
-#   source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role-with-oidc"
-#   version = "4.7.0"
+  # Terraform's "jsonencode" function converts a
+  # Terraform expression result to valid JSON syntax.
+  policy = jsonencode({
+  "Version" : "2012-10-17",
+  "Statement" : [
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:AssignPrivateIpAddresses",
+        "ec2:AttachNetworkInterface",
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DescribeInstances",
+        "ec2:DescribeTags",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DetachNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:UnassignPrivateIpAddresses"
+      ],
+      "Resource" : "*"
+    },
+    {
+      "Effect" : "Allow",
+      "Action" : [
+        "ec2:CreateTags"
+      ],
+      "Resource" : [
+        "arn:aws:ec2:*:*:network-interface/*"
+      ]
+    }
+  ]
+})
+}
 
-#   create_role                   = true
-#   role_name                     = "AmazonEKSTFVPCCNIRole-${module.eks.cluster_name}"
-#   provider_url                  = module.eks.oidc_provider
-#   role_policy_arns              = [data.aws_iam_policy.ebs_csi_policy.arn]
-#   oidc_fully_qualified_subjects = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
-# }
+module "irsa_vpc_cni" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role-with-oidc"
+  version = "4.7.0"
+
+  create_role                   = true
+  role_name                     = "vpc_cni_role-${module.eks.cluster_name}"
+  provider_url                  = module.eks.oidc_provider
+  role_policy_arns              = [aws_iam_policy.vpc_cni_policy.arn]
+  oidc_fully_qualified_subjects = ["system:serviceaccount:kube-system:vpc-cni-controller-sa"]
+}
 
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name             = module.eks.cluster_name
   addon_name               = "vpc-cni"
+  service_account_role_arn = module.irsa_vpc_cni.iam_role_arn
 }
